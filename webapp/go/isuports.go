@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -69,6 +71,7 @@ func connectAdminDB() (*sqlx.DB, error) {
 	config.Passwd = getEnv("ISUCON_DB_PASSWORD", "isucon")
 	config.DBName = getEnv("ISUCON_DB_NAME", "isuports")
 	config.ParseTime = true
+	config.InterpolateParams = true
 	dsn := config.FormatDSN()
 	return sqlx.Open("nrmysql", dsn)
 }
@@ -566,7 +569,7 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	if err := adminDB.SelectContext(
 		ctx,
 		&vhs,
-		"SELECT player_id, MIN(created_at) AS min_created_at FROM visit_history WHERE tenant_id = ? AND competition_id = ? GROUP BY player_id",
+		"SELECT player_id, created_at AS min_created_at FROM visit_history_new WHERE tenant_id = ? AND competition_id = ?",
 		tenantID,
 		comp.ID,
 	); err != nil && err != sql.ErrNoRows {
@@ -1365,20 +1368,18 @@ func competitionRankingHandler(c echo.Context) error {
 	}
 
 	now := time.Now().Unix()
-	var tenant TenantRow
-	if err := adminDB.GetContext(ctx, &tenant, "SELECT * FROM tenant WHERE id = ?", v.tenantID); err != nil {
-		return fmt.Errorf("error Select tenant: id=%d, %w", v.tenantID, err)
-	}
-
 	if _, err := adminDB.ExecContext(
 		ctx,
-		"INSERT INTO visit_history (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-		v.playerID, tenant.ID, competitionID, now, now,
+		"INSERT INTO visit_history_new (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+		v.playerID, v.tenantID, competitionID, now, now,
 	); err != nil {
-		return fmt.Errorf(
-			"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
-			v.playerID, tenant.ID, competitionID, now, now, err,
-		)
+		var me *mysql.MySQLError
+		if !(errors.As(err, &me) && me.Number == 1062) {
+			return fmt.Errorf(
+				"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
+				v.playerID, v.tenantID, competitionID, now, now, err,
+			)
+		}
 	}
 
 	var rankAfter int64
@@ -1406,11 +1407,11 @@ func competitionRankingHandler(c echo.Context) error {
 		ORDER BY ps.score DESC, ps.row_num ASC
 		limit 100
 		offset ?`,
-		tenant.ID,
+		v.tenantID,
 		competitionID,
 		rankAfter,
 	); err != nil {
-		return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", tenant.ID, competitionID, err)
+		return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
 	}
 	// ranks := make([]CompetitionRank, 0, len(pss))
 	// scoredPlayerSet := make(map[string]struct{}, len(pss))
@@ -1651,6 +1652,49 @@ func initializeHandler(c echo.Context) error {
 	if err != nil {
 		return fmt.Errorf("error exec.Command: %s %e", string(out), err)
 	}
+
+	var v []VisitHistoryRow
+	if err := adminDB.SelectContext(c.Request().Context(), &v, `
+	select v.* 
+from visit_history as v
+JOIN (SELECT player_id as pi, min(created_at) AS min_created_at FROM visit_history group by tenant_id, competition_id, player_id) as m
+on v.player_id = pi and v.created_at = min_created_at
+`); err != nil {
+		return fmt.Errorf("error Select visit_history: %w", err)
+	}
+	sort.Slice(v, func(i, j int) bool {
+		if v[i].TenantID == v[j].TenantID {
+			if v[i].CompetitionID == v[j].CompetitionID {
+				if v[i].PlayerID == v[j].PlayerID {
+					return v[i].CreatedAt < v[j].CreatedAt
+				}
+				return v[i].PlayerID < v[j].PlayerID
+			}
+			return v[i].CompetitionID < v[j].CompetitionID
+		}
+		return v[i].TenantID < v[j].TenantID
+	})
+
+	prevVh := VisitHistoryRow{}
+	newV := make([]VisitHistoryRow, 0, len(v))
+	for _, vh := range v {
+		if vh.TenantID == prevVh.TenantID && vh.CompetitionID == prevVh.CompetitionID && vh.PlayerID == prevVh.PlayerID {
+			continue
+		}
+		newV = append(newV, vh)
+		prevVh = vh
+	}
+
+	bin := 10000
+	lim := (len(newV) + bin - 1) / bin
+	for i := 0; i < lim; i++ {
+		min := int(math.Min(float64(i+1)*float64(bin), float64(len(newV))))
+		if _, err := adminDB.NamedExecContext(c.Request().Context(), `
+		insert into visit_history_new (tenant_id, competition_id, player_id, created_at, updated_at) values (:tenant_id, :competition_id, :player_id, :created_at, :updated_at)`, newV[bin*i:min]); err != nil {
+			return fmt.Errorf("error NamedExecContext visit_history: %w", err)
+		}
+	}
+
 	res := InitializeHandlerResult{
 		Lang: "go",
 	}
