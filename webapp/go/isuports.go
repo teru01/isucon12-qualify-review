@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/gofrs/flock"
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -56,6 +58,7 @@ var (
 
 	playerCache = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
 	cCache      = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
+	tCache      = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
 )
 
 // 環境変数を取得する、なければデフォルト値を返す
@@ -109,28 +112,30 @@ func createTenantDB(id int64) error {
 
 // システム全体で一意なIDを生成する
 func dispenseID(ctx context.Context) (string, error) {
-	var id int64
-	var lastErr error
-	for i := 0; i < 100; i++ {
-		var ret sql.Result
-		ret, err := adminDB.ExecContext(ctx, "REPLACE INTO id_generator (stub) VALUES (?);", "a")
-		if err != nil {
-			if merr, ok := err.(*mysql.MySQLError); ok && merr.Number == 1213 { // deadlock
-				lastErr = fmt.Errorf("error REPLACE INTO id_generator: %w", err)
-				continue
-			}
-			return "", fmt.Errorf("error REPLACE INTO id_generator: %w", err)
-		}
-		id, err = ret.LastInsertId()
-		if err != nil {
-			return "", fmt.Errorf("error ret.LastInsertId: %w", err)
-		}
-		break
-	}
-	if id != 0 {
-		return fmt.Sprintf("%x", id), nil
-	}
-	return "", lastErr
+	u := uuid.NewString()
+	return u[:10], nil
+	// var id int64
+	// var lastErr error
+	// for i := 0; i < 100; i++ {
+	// 	var ret sql.Result
+	// 	ret, err := adminDB.ExecContext(ctx, "REPLACE INTO id_generator (stub) VALUES (?);", "a")
+	// 	if err != nil {
+	// 		if merr, ok := err.(*mysql.MySQLError); ok && merr.Number == 1213 { // deadlock
+	// 			lastErr = fmt.Errorf("error REPLACE INTO id_generator: %w", err)
+	// 			continue
+	// 		}
+	// 		return "", fmt.Errorf("error REPLACE INTO id_generator: %w", err)
+	// 	}
+	// 	id, err = ret.LastInsertId()
+	// 	if err != nil {
+	// 		return "", fmt.Errorf("error ret.LastInsertId: %w", err)
+	// 	}
+	// 	break
+	// }
+	// if id != 0 {
+	// 	return fmt.Sprintf("%x", id), nil
+	// }
+	// return "", lastErr
 }
 
 // 全APIにCache-Control: privateを設定する
@@ -200,6 +205,7 @@ func Run() {
 	e.GET("/api/player/competition/:competition_id/ranking", competitionRankingHandler)
 	e.GET("/api/player/competitions", playerCompetitionsHandler)
 
+	e.GET("/debug/pprof", echo.WrapHandler(http.HandlerFunc(pprof.Profile)))
 	// 全ロール及び未認証でも使えるhandler
 	e.GET("/api/me", meHandler)
 
@@ -356,6 +362,11 @@ func retrieveTenantRowFromHeader(c echo.Context) (*TenantRow, error) {
 	}
 
 	// テナントの存在確認
+	t, found := tCache.Get(tenantName)
+	if found {
+		tt := t.(TenantRow)
+		return &tt, nil
+	}
 	var tenant TenantRow
 	if err := adminDB.GetContext(
 		c.Request().Context(),
@@ -365,6 +376,7 @@ func retrieveTenantRowFromHeader(c echo.Context) (*TenantRow, error) {
 	); err != nil {
 		return nil, fmt.Errorf("failed to Select tenant: name=%s, %w", tenantName, err)
 	}
+	tCache.Set(tenantName, tenant, cache.DefaultExpiration)
 	return &tenant, nil
 }
 
@@ -523,6 +535,14 @@ func tenantsAddHandler(c echo.Context) error {
 	if err != nil {
 		return fmt.Errorf("error get LastInsertId: %w", err)
 	}
+	tCache.Set(name, TenantRow{
+		ID:          int64(id),
+		Name:        name,
+		DisplayName: displayName,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}, cache.DefaultExpiration)
+
 	// NOTE: 先にadminDBに書き込まれることでこのAPIの処理中に
 	//       /api/admin/tenants/billingにアクセスされるとエラーになりそう
 	//       ロックなどで対処したほうが良さそう
@@ -1421,7 +1441,8 @@ func competitionRankingHandler(c echo.Context) error {
 	if err := authorizePlayer(ctx, tenantDB, v.playerID); err != nil {
 		return err
 	}
-
+	s1.End()
+	s2 := txn.StartSegment("s2")
 	competitionID := c.Param("competition_id")
 	if competitionID == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "competition_id is required")
@@ -1435,7 +1456,8 @@ func competitionRankingHandler(c echo.Context) error {
 		}
 		return fmt.Errorf("error retrieveCompetition: %w", err)
 	}
-
+	s2.End()
+	s3 := txn.StartSegment("s3")
 	now := time.Now().Unix()
 	if _, err := adminDB.ExecContext(
 		ctx,
@@ -1458,7 +1480,7 @@ func competitionRankingHandler(c echo.Context) error {
 			return fmt.Errorf("error strconv.ParseUint: rankAfterStr=%s, %w", rankAfterStr, err)
 		}
 	}
-	s1.End()
+	s3.End()
 	// s2 := txn.StartSegment("s2")
 	// player_score_newを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
 	// fl, err := flockByTenantID(v.tenantID)
@@ -1467,7 +1489,7 @@ func competitionRankingHandler(c echo.Context) error {
 	// }
 	// defer fl.Close()
 	// s2.End()
-	s3 := txn.StartSegment("s3")
+	s4 := txn.StartSegment("s3")
 	pagedRanks := make([]CompetitionRank, 0, 100)
 	if err := tenantDB.SelectContext(
 		ctx,
@@ -1539,7 +1561,7 @@ func competitionRankingHandler(c echo.Context) error {
 			Ranks: pagedRanks,
 		},
 	}
-	s3.End()
+	s4.End()
 	return c.JSON(http.StatusOK, res)
 }
 
