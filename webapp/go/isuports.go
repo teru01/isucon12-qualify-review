@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -49,6 +50,11 @@ const (
 	RoleNone      = "none"
 )
 
+type VisitHistoryx struct {
+	mutex sync.Mutex
+	data  map[string]map[string]struct{}
+}
+
 var (
 	// 正しいテナント名の正規表現
 	tenantNameRegexp = regexp.MustCompile(`^[a-z][a-z0-9-]{0,61}[a-z0-9]$`)
@@ -61,6 +67,11 @@ var (
 	cCache       = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
 	tCache       = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
 	billingCache = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
+
+	visitHistory = &VisitHistoryx{
+		data:  make(map[string]map[string]struct{}),
+		mutex: sync.Mutex{},
+	}
 )
 
 // 環境変数を取得する、なければデフォルト値を返す
@@ -640,7 +651,7 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	if err := adminDB.SelectContext(
 		ctx,
 		&vhs,
-		"SELECT player_id, created_at AS min_created_at FROM visit_history_new WHERE tenant_id = ? AND competition_id = ?",
+		"SELECT player_id FROM visit_history_new WHERE tenant_id = ? AND competition_id = ?",
 		tenantID,
 		comp.ID,
 	); err != nil && err != sql.ErrNoRows {
@@ -649,9 +660,9 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	billingMap := map[string]string{}
 	for _, vh := range vhs {
 		// competition.finished_atよりもあとの場合は、終了後に訪問したとみなして大会開催内アクセス済みとみなさない
-		if comp.FinishedAt.Valid && comp.FinishedAt.Int64 < vh.MinCreatedAt {
-			continue
-		}
+		// if comp.FinishedAt.Valid && comp.FinishedAt.Int64 < vh.MinCreatedAt {
+		// 	continue
+		// }
 		billingMap[vh.PlayerID] = "visitor"
 	}
 
@@ -1102,6 +1113,27 @@ func competitionFinishHandler(c echo.Context) error {
 		ccp.UpdatedAt = now
 		cCache.Set(id, ccp, cache.DefaultExpiration)
 	}
+
+	// 閲覧履歴を書き込む
+	vs := []VisitHistoryRow{}
+	visitHistory.mutex.Lock()
+	pMap := visitHistory.data[fmt.Sprintf("%v-%v", v.tenantID, id)]
+	for pID := range pMap {
+		vs = append(vs, VisitHistoryRow{
+			TenantID:      v.tenantID,
+			PlayerID:      pID,
+			CompetitionID: id,
+		})
+	}
+	visitHistory.mutex.Unlock()
+	if len(vs) > 0 {
+		if _, err := adminDB.NamedExecContext(
+			ctx,
+			"INSERT INTO visit_history_new (player_id, tenant_id, competition_id) VALUES (:player_id, :tenant_id, :competition_id)", vs,
+		); err != nil {
+			return fmt.Errorf("error Insert visit_history_new: %w", err)
+		}
+	}
 	return c.JSON(http.StatusOK, SuccessResult{Status: true})
 }
 
@@ -1507,22 +1539,28 @@ func competitionRankingHandler(c echo.Context) error {
 	if !competition.FinishedAt.Valid {
 		// 課金に使われるのは大会中のアクセスだけ
 
-		now := time.Now().Unix()
-
+		// now := time.Now().Unix()
 		// 大会終了時に書き込めてれば良い
-		if _, err := adminDB.ExecContext(
-			ctx,
-			"INSERT INTO visit_history_new (player_id, tenant_id, competition_id, created_at) VALUES (?, ?, ?, ?)",
-			v.playerID, v.tenantID, competitionID, now,
-		); err != nil {
-			var me *mysql.MySQLError
-			if !(errors.As(err, &me) && me.Number == 1062) {
-				return fmt.Errorf(
-					"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
-					v.playerID, v.tenantID, competitionID, now, now, err,
-				)
-			}
+		visitHistory.mutex.Lock()
+		if visitHistory.data[fmt.Sprintf("%v-%v", v.tenantID, competitionID)] == nil {
+			visitHistory.data[fmt.Sprintf("%v-%v", v.tenantID, competitionID)] = make(map[string]struct{})
 		}
+		visitHistory.data[fmt.Sprintf("%v-%v", v.tenantID, competitionID)][v.playerID] = struct{}{}
+		visitHistory.mutex.Unlock()
+
+		// if _, err := adminDB.ExecContext(
+		// 	ctx,
+		// 	"INSERT INTO visit_history_new (player_id, tenant_id, competition_id, created_at) VALUES (?, ?, ?, ?)",
+		// 	v.playerID, v.tenantID, competitionID, now,
+		// ); err != nil {
+		// 	var me *mysql.MySQLError
+		// 	if !(errors.As(err, &me) && me.Number == 1062) {
+		// 		return fmt.Errorf(
+		// 			"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
+		// 			v.playerID, v.tenantID, competitionID, now, now, err,
+		// 		)
+		// 	}
+		// }
 	}
 
 	var rankAfter int64
@@ -1837,7 +1875,7 @@ on v.player_id = pi and v.created_at = min_created_at
 	for i := 0; i < lim; i++ {
 		min := int(math.Min(float64(i+1)*float64(bin), float64(len(newV))))
 		if _, err := adminDB.NamedExecContext(c.Request().Context(), `
-		insert into visit_history_new (tenant_id, competition_id, player_id, created_at) values (:tenant_id, :competition_id, :player_id, :created_at)`, newV[bin*i:min]); err != nil {
+		insert into visit_history_new (tenant_id, competition_id, player_id) values (:tenant_id, :competition_id, :player_id)`, newV[bin*i:min]); err != nil {
 			return fmt.Errorf("error NamedExecContext visit_history: %w", err)
 		}
 	}
