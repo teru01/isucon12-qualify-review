@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -146,11 +147,24 @@ func SetCacheControlPrivate(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
+func LogIfErr(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		if err := next(c); err != nil {
+			c.Error(err)
+		}
+		if c.Response().Status >= 500 {
+			log.Errorf("%d", c.Response().Status)
+		}
+		return nil
+	}
+}
+
 // Run は cmd/isuports/main.go から呼ばれるエントリーポイントです
 func Run() {
+	debug.SetGCPercent(400)
 	e := echo.New()
-	e.Debug = true
-	e.Logger.SetLevel(log.DEBUG)
+	e.Debug = false
+	e.Logger.SetLevel(log.ERROR)
 
 	var (
 		sqlLogger io.Closer
@@ -180,7 +194,7 @@ func Run() {
 	defer sqlLogger.Close()
 
 	e.Use(nrecho.Middleware(app))
-	e.Use(middleware.Logger())
+	e.Use(LogIfErr)
 	e.Use(middleware.Recover())
 	e.Use(SetCacheControlPrivate)
 
@@ -219,7 +233,8 @@ func Run() {
 		e.Logger.Fatalf("failed to connect db: %v", err)
 		return
 	}
-	adminDB.SetMaxOpenConns(10)
+	adminDB.SetMaxOpenConns(50)
+	adminDB.SetMaxIdleConns(50)
 	defer adminDB.Close()
 
 	port := getEnv("SERVER_APP_PORT", "3000")
