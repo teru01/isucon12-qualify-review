@@ -57,9 +57,10 @@ var (
 
 	sqliteDriverName = "nrsqlite3"
 
-	playerCache = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
-	cCache      = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
-	tCache      = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
+	playerCache  = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
+	cCache       = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
+	tCache       = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
+	billingCache = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
 )
 
 // 環境変数を取得する、なければデフォルト値を返す
@@ -589,6 +590,14 @@ type BillingReport struct {
 	BillingYen        int64  `json:"billing_yen"`         // 合計請求金額
 }
 
+type BillingSimple struct {
+	PlayerCount       int64 `json:"player_count"`        // スコアを登録した参加者数
+	VisitorCount      int64 `json:"visitor_count"`       // ランキングを閲覧だけした(スコアを登録していない)参加者数
+	BillingPlayerYen  int64 `json:"billing_player_yen"`  // 請求金額 スコアを登録した参加者分
+	BillingVisitorYen int64 `json:"billing_visitor_yen"` // 請求金額 ランキングを閲覧だけした(スコアを登録していない)参加者分
+	BillingYen        int64 `json:"billing_yen"`         // 合計請求金額
+}
+
 type VisitHistoryRow struct {
 	PlayerID      string `db:"player_id"`
 	TenantID      int64  `db:"tenant_id"`
@@ -603,10 +612,27 @@ type VisitHistorySummaryRow struct {
 }
 
 // 大会ごとの課金レポートを計算する
-func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID int64, competitonID string) (*BillingReport, error) {
-	comp, err := retrieveCompetition(ctx, tenantDB, competitonID)
-	if err != nil {
-		return nil, fmt.Errorf("error retrieveCompetition: %w", err)
+// 終了してない場合は呼び出されない
+func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID int64, comp CompetitionRow) (*BillingReport, error) {
+	// comp, err := retrieveCompetition(ctx, tenantDB, competitonID)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("error retrieveCompetition: %w", err)
+	// }
+
+	// 終了後にだけ呼び出される
+	// 課金は変化しないのでずっとキャッシュできる
+	billing, found := billingCache.Get(comp.ID)
+	if found {
+		b := billing.(BillingSimple)
+		return &BillingReport{
+			CompetitionID:     comp.ID,
+			CompetitionTitle:  comp.Title,
+			PlayerCount:       b.PlayerCount,
+			VisitorCount:      b.VisitorCount,
+			BillingPlayerYen:  b.BillingPlayerYen,
+			BillingVisitorYen: b.BillingVisitorYen,
+			BillingYen:        b.BillingYen,
+		}, nil
 	}
 
 	// ランキングにアクセスした参加者のIDを取得する
@@ -644,7 +670,7 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 		"SELECT player_id FROM player_score_new WHERE tenant_id = ? AND competition_id = ?",
 		tenantID, comp.ID,
 	); err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("error Select count player_score_new: tenantID=%d, competitionID=%s, %w", tenantID, competitonID, err)
+		return nil, fmt.Errorf("error Select count player_score_new: tenantID=%d, competitionID=%s, %w", tenantID, comp.ID, err)
 	}
 	for _, pid := range scoredPlayerIDs {
 		// スコアが登録されている参加者
@@ -663,6 +689,14 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 			}
 		}
 	}
+	billingCache.Set(comp.ID, BillingSimple{
+		PlayerCount:       playerCount,
+		VisitorCount:      visitorCount,
+		BillingPlayerYen:  100 * playerCount, // スコアを登録した参加者は100円
+		BillingVisitorYen: 10 * visitorCount, // ランキングを閲覧だけした(スコアを登録していない)参加者は10円
+		BillingYen:        100*playerCount + 10*visitorCount,
+	}, cache.DefaultExpiration)
+
 	return &BillingReport{
 		CompetitionID:     comp.ID,
 		CompetitionTitle:  comp.Title,
@@ -745,17 +779,17 @@ func tenantsBillingHandler(c echo.Context) error {
 				return fmt.Errorf("failed to connectToTenantDB: %w", err)
 			}
 			defer tenantDB.Close()
-			ids := []string{}
+			crs := []CompetitionRow{}
 			if err := tenantDB.SelectContext(
 				ctx,
-				&ids,
-				"SELECT id FROM competition WHERE tenant_id=? AND finished_at IS NOT NULL",
+				&crs,
+				"SELECT id, title, finished_at FROM competition WHERE tenant_id=? AND finished_at IS NOT NULL",
 				t.ID,
 			); err != nil {
 				return fmt.Errorf("failed to Select competition: %w", err)
 			}
-			for _, cid := range ids {
-				report, err := billingReportByCompetition(ctx, tenantDB, t.ID, cid)
+			for _, cr := range crs {
+				report, err := billingReportByCompetition(ctx, tenantDB, t.ID, cr)
 				if err != nil {
 					return fmt.Errorf("failed to billingReportByCompetition: %w", err)
 				}
@@ -1260,16 +1294,24 @@ func billingHandler(c echo.Context) error {
 	if err := tenantDB.SelectContext(
 		ctx,
 		&cs,
-		"SELECT * FROM competition WHERE tenant_id=? ORDER BY created_at DESC",
+		"SELECT id, title, finished_at FROM competition WHERE tenant_id=? ORDER BY created_at DESC",
 		v.tenantID,
 	); err != nil {
 		return fmt.Errorf("error Select competition: %w", err)
 	}
 	tbrs := make([]BillingReport, 0, len(cs))
 	for _, comp := range cs {
-		report, err := billingReportByCompetition(ctx, tenantDB, v.tenantID, comp.ID)
-		if err != nil {
-			return fmt.Errorf("error billingReportByCompetition: %w", err)
+		var report *BillingReport
+		if comp.FinishedAt.Valid {
+			report, err = billingReportByCompetition(ctx, tenantDB, v.tenantID, comp)
+			if err != nil {
+				return fmt.Errorf("error billingReportByCompetition: %w", err)
+			}
+		} else {
+			report = &BillingReport{
+				CompetitionID:    comp.ID,
+				CompetitionTitle: comp.Title,
+			}
 		}
 		tbrs = append(tbrs, *report)
 	}
