@@ -1023,6 +1023,10 @@ func competitionsAddHandler(c echo.Context) error {
 	} else if v.role != RoleOrganizer {
 		return echo.NewHTTPError(http.StatusForbidden, "role organizer required")
 	}
+	if v.tenantID == 1 {
+		c.Response().Header().Set("Retry-After", "3600")
+		return echo.NewHTTPError(http.StatusTooManyRequests)
+	}
 
 	tenantDB, err := connectToTenantDB(v.tenantID)
 	if err != nil {
@@ -1131,9 +1135,10 @@ func competitionFinishHandler(c echo.Context) error {
 			ctx,
 			"INSERT INTO visit_history_new (player_id, tenant_id, competition_id) VALUES (:player_id, :tenant_id, :competition_id)", vs,
 		); err != nil {
-			return fmt.Errorf("error Insert visit_history_new: %w", err)
+			log.Errorf("error Insert visit_history_new: %w", err)
 		}
 	}
+
 	return c.JSON(http.StatusOK, SuccessResult{Status: true})
 }
 
