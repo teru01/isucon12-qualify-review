@@ -30,4 +30,5 @@ for i in `seq 1 100`; do
   row_num BIGINT DEFAULT 0
 )';
 	sqlite3 ../tenant_db/$i.db 'create index idx on player_score_new (tenant_id, competition_id, score)';
+	sqlite3 ../tenant_db/$i.db 'create index idx_2 on player_score_new (player_id)';
 done

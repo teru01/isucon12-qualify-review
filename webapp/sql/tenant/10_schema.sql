@@ -41,3 +41,4 @@ CREATE TABLE player_score_new (
 );
 
 create index idx on player_score_new (tenant_id, competition_id, score);
+create index idx_2 on player_score_new (player_id);
