@@ -152,9 +152,6 @@ func LogIfErr(next echo.HandlerFunc) echo.HandlerFunc {
 		if err := next(c); err != nil {
 			c.Error(err)
 		}
-		if c.Response().Status >= 500 {
-			log.Errorf("%d", c.Response().Status)
-		}
 		return nil
 	}
 }
@@ -479,8 +476,6 @@ type PlayerScoreRow struct {
 	CompetitionID string `db:"competition_id"`
 	Score         int64  `db:"score"`
 	RowNum        int64  `db:"row_num"`
-	CreatedAt     int64  `db:"created_at"`
-	UpdatedAt     int64  `db:"updated_at"`
 }
 
 // 排他ロックのためのファイル名を生成する
@@ -1186,7 +1181,7 @@ func competitionScoreHandler(c echo.Context) error {
 		if err != nil {
 			return fmt.Errorf("error dispenseID: %w", err)
 		}
-		now := time.Now().Unix()
+		// now := time.Now().Unix()
 		psmap[competitionID+playerID] = PlayerScoreRow{
 			ID:            id,
 			TenantID:      v.tenantID,
@@ -1194,8 +1189,6 @@ func competitionScoreHandler(c echo.Context) error {
 			CompetitionID: competitionID,
 			Score:         score,
 			RowNum:        rowNum,
-			CreatedAt:     now,
-			UpdatedAt:     now,
 		}
 		responseRows++
 	}
@@ -1217,10 +1210,10 @@ func competitionScoreHandler(c echo.Context) error {
 
 	if _, err := tx.NamedExecContext(
 		ctx,
-		"INSERT INTO player_score_new (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)",
+		"INSERT INTO player_score_new (id, tenant_id, player_id, competition_id, score, row_num) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num)",
 		playerScoreRows,
 	); err != nil {
-		return fmt.Errorf("error")
+		return fmt.Errorf("error: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("error tx.Commit: %w", err)
@@ -1813,7 +1806,7 @@ on v.player_id = pi and v.created_at = min_created_at
 		if _, err := tenantDB.ExecContext(c.Request().Context(),
 			`
 INSERT INTO player_score_new
-SELECT id, tenant_id, player_id, competition_id, score, max(row_num) as row_num, created_at, updated_at
+SELECT id, tenant_id, player_id, competition_id, score, max(row_num) as row_num
 FROM player_score
 GROUP BY competition_id, player_id`); err != nil {
 			return fmt.Errorf("error ExecContext: %w", err)

@@ -30,3 +30,14 @@ CREATE TABLE player_score (
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL
 );
+
+CREATE TABLE player_score_new (
+  id VARCHAR(255) NOT NULL PRIMARY KEY,
+  tenant_id BIGINT NOT NULL,
+  player_id VARCHAR(255) NOT NULL,
+  competition_id VARCHAR(255) NOT NULL,
+  score BIGINT NOT NULL,
+  row_num BIGINT NOT NULL
+);
+
+create index idx on player_score_new (tenant_id, competition_id, score);

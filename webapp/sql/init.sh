@@ -27,9 +27,7 @@ for i in `seq 1 100`; do
   player_id VARCHAR(255) NOT NULL,
   competition_id VARCHAR(255) NOT NULL,
   score BIGINT NOT NULL,
-  row_num BIGINT NOT NULL,
-  created_at BIGINT NOT NULL,
-  updated_at BIGINT NOT NULL
+  row_num BIGINT DEFAULT 0
 )';
 	sqlite3 ../tenant_db/$i.db 'create index idx on player_score_new (tenant_id, competition_id, score)';
 done

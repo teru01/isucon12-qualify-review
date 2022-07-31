@@ -35,7 +35,6 @@ CREATE TABLE `visit_history_new` (
   `tenant_id` BIGINT UNSIGNED NOT NULL,
   `competition_id` VARCHAR(255) NOT NULL,
   `created_at` BIGINT NOT NULL,
-  `updated_at` BIGINT NOT NULL,
   PRIMARY KEY (`tenant_id`, `competition_id`, `player_id`),
   INDEX idx (tenant_id , competition_id ,player_id, created_at )
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
