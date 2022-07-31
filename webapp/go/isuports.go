@@ -646,7 +646,7 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	if err := tenantDB.SelectContext(
 		ctx,
 		&scoredPlayerIDs,
-		"SELECT DISTINCT(player_id) FROM player_score_new WHERE tenant_id = ? AND competition_id = ?",
+		"SELECT player_id FROM player_score_new WHERE tenant_id = ? AND competition_id = ?",
 		tenantID, comp.ID,
 	); err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("error Select count player_score_new: tenantID=%d, competitionID=%s, %w", tenantID, competitonID, err)
@@ -1476,8 +1476,8 @@ func competitionRankingHandler(c echo.Context) error {
 	now := time.Now().Unix()
 	if _, err := adminDB.ExecContext(
 		ctx,
-		"INSERT INTO visit_history_new (player_id, tenant_id, competition_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-		v.playerID, v.tenantID, competitionID, now, now,
+		"INSERT INTO visit_history_new (player_id, tenant_id, competition_id, created_at) VALUES (?, ?, ?, ?)",
+		v.playerID, v.tenantID, competitionID, now,
 	); err != nil {
 		var me *mysql.MySQLError
 		if !(errors.As(err, &me) && me.Number == 1062) {
@@ -1800,7 +1800,7 @@ on v.player_id = pi and v.created_at = min_created_at
 	for i := 0; i < lim; i++ {
 		min := int(math.Min(float64(i+1)*float64(bin), float64(len(newV))))
 		if _, err := adminDB.NamedExecContext(c.Request().Context(), `
-		insert into visit_history_new (tenant_id, competition_id, player_id, created_at, updated_at) values (:tenant_id, :competition_id, :player_id, :created_at, :updated_at)`, newV[bin*i:min]); err != nil {
+		insert into visit_history_new (tenant_id, competition_id, player_id, created_at) values (:tenant_id, :competition_id, :player_id, :created_at)`, newV[bin*i:min]); err != nil {
 			return fmt.Errorf("error NamedExecContext visit_history: %w", err)
 		}
 	}
