@@ -1504,18 +1504,24 @@ func competitionRankingHandler(c echo.Context) error {
 	}
 	s2.End()
 	s3 := txn.StartSegment("s3")
-	now := time.Now().Unix()
-	if _, err := adminDB.ExecContext(
-		ctx,
-		"INSERT INTO visit_history_new (player_id, tenant_id, competition_id, created_at) VALUES (?, ?, ?, ?)",
-		v.playerID, v.tenantID, competitionID, now,
-	); err != nil {
-		var me *mysql.MySQLError
-		if !(errors.As(err, &me) && me.Number == 1062) {
-			return fmt.Errorf(
-				"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
-				v.playerID, v.tenantID, competitionID, now, now, err,
-			)
+	if !competition.FinishedAt.Valid {
+		// 課金に使われるのは大会中のアクセスだけ
+
+		now := time.Now().Unix()
+
+		// 大会終了時に書き込めてれば良い
+		if _, err := adminDB.ExecContext(
+			ctx,
+			"INSERT INTO visit_history_new (player_id, tenant_id, competition_id, created_at) VALUES (?, ?, ?, ?)",
+			v.playerID, v.tenantID, competitionID, now,
+		); err != nil {
+			var me *mysql.MySQLError
+			if !(errors.As(err, &me) && me.Number == 1062) {
+				return fmt.Errorf(
+					"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
+					v.playerID, v.tenantID, competitionID, now, now, err,
+				)
+			}
 		}
 	}
 
