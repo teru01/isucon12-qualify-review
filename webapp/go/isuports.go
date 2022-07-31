@@ -596,10 +596,10 @@ func billingReportByCompetition(ctx context.Context, tenantDB dbOrTx, tenantID i
 	if err := tenantDB.SelectContext(
 		ctx,
 		&scoredPlayerIDs,
-		"SELECT DISTINCT(player_id) FROM player_score WHERE tenant_id = ? AND competition_id = ?",
+		"SELECT DISTINCT(player_id) FROM player_score_new WHERE tenant_id = ? AND competition_id = ?",
 		tenantID, comp.ID,
 	); err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("error Select count player_score: tenantID=%d, competitionID=%s, %w", tenantID, competitonID, err)
+		return nil, fmt.Errorf("error Select count player_score_new: tenantID=%d, competitionID=%s, %w", tenantID, competitonID, err)
 	}
 	for _, pid := range scoredPlayerIDs {
 		// スコアが登録されている参加者
@@ -1129,16 +1129,16 @@ func competitionScoreHandler(c echo.Context) error {
 	}
 	if _, err := tx.ExecContext(
 		ctx,
-		"DELETE FROM player_score WHERE tenant_id = ? AND competition_id = ?",
+		"DELETE FROM player_score_new WHERE tenant_id = ? AND competition_id = ?",
 		v.tenantID,
 		competitionID,
 	); err != nil {
-		return fmt.Errorf("error Delete player_score: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
+		return fmt.Errorf("error Delete player_score_new: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
 	}
 
 	if _, err := tx.NamedExecContext(
 		ctx,
-		"INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)",
+		"INSERT INTO player_score_new (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)",
 		playerScoreRows,
 	); err != nil {
 		return fmt.Errorf("error")
@@ -1149,11 +1149,11 @@ func competitionScoreHandler(c echo.Context) error {
 	// for _, ps := range playerScoreRows {
 	// 	if _, err := tenantDB.NamedExecContext(
 	// 		ctx,
-	// 		"INSERT INTO player_score (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)",
+	// 		"INSERT INTO player_score_new (id, tenant_id, player_id, competition_id, score, row_num, created_at, updated_at) VALUES (:id, :tenant_id, :player_id, :competition_id, :score, :row_num, :created_at, :updated_at)",
 	// 		ps,
 	// 	); err != nil {
 	// 		return fmt.Errorf(
-	// 			"error Insert player_score: id=%s, tenant_id=%d, playerID=%s, competitionID=%s, score=%d, rowNum=%d, createdAt=%d, updatedAt=%d, %w",
+	// 			"error Insert player_score_new: id=%s, tenant_id=%d, playerID=%s, competitionID=%s, score=%d, rowNum=%d, createdAt=%d, updatedAt=%d, %w",
 	// 			ps.ID, ps.TenantID, ps.PlayerID, ps.CompetitionID, ps.Score, ps.RowNum, ps.CreatedAt, ps.UpdatedAt, err,
 	// 		)
 	// 	}
@@ -1268,12 +1268,12 @@ func playerHandler(c echo.Context) error {
 		ctx,
 		&psds,
 		`SELECT c.title, ps.score
-FROM player_score ps
+FROM player_score_new ps
 JOIN competition c ON ps.competition_id = c.id
 WHERE ps.player_id = ?
 ORDER BY c.created_at`, playerID); err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("error Select player_score: %w", err)
+			return fmt.Errorf("error Select player_score_new: %w", err)
 		}
 	}
 
@@ -1287,7 +1287,7 @@ ORDER BY c.created_at`, playerID); err != nil {
 	// 	return fmt.Errorf("error Select competition: %w", err)
 	// }
 
-	// // player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
+	// // player_score_newを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
 	// fl, err := flockByTenantID(v.tenantID)
 	// if err != nil {
 	// 	return fmt.Errorf("error flockByTenantID: %w", err)
@@ -1300,7 +1300,7 @@ ORDER BY c.created_at`, playerID); err != nil {
 	// 		ctx,
 	// 		&ps,
 	// 		// 最後にCSVに登場したスコアを採用する = row_numが一番大きいもの
-	// 		"SELECT * FROM player_score WHERE tenant_id = ? AND competition_id = ? AND player_id = ? ORDER BY row_num DESC LIMIT 1",
+	// 		"SELECT * FROM player_score_new WHERE tenant_id = ? AND competition_id = ? AND player_id = ? ORDER BY row_num DESC LIMIT 1",
 	// 		v.tenantID,
 	// 		c.ID,
 	// 		p.ID,
@@ -1309,7 +1309,7 @@ ORDER BY c.created_at`, playerID); err != nil {
 	// 		if errors.Is(err, sql.ErrNoRows) {
 	// 			continue
 	// 		}
-	// 		return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, playerID=%s, %w", v.tenantID, c.ID, p.ID, err)
+	// 		return fmt.Errorf("error Select player_score_new: tenantID=%d, competitionID=%s, playerID=%s, %w", v.tenantID, c.ID, p.ID, err)
 	// 	}
 	// 	pss = append(pss, ps)
 	// }
@@ -1416,7 +1416,7 @@ func competitionRankingHandler(c echo.Context) error {
 	}
 	s1.End()
 	// s2 := txn.StartSegment("s2")
-	// player_scoreを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
+	// player_score_newを読んでいるときに更新が走ると不整合が起こるのでロックを取得する
 	// fl, err := flockByTenantID(v.tenantID)
 	// if err != nil {
 	// 	return fmt.Errorf("error flockByTenantID: %w", err)
@@ -1429,7 +1429,7 @@ func competitionRankingHandler(c echo.Context) error {
 		ctx,
 		&pagedRanks,
 		`SELECT RANK() OVER (ORDER BY score DESC, row_num ASC) AS rank, score, player_id, display_name
-		FROM player_score ps
+		FROM player_score_new ps
 		JOIN player ON player.id = ps.player_id
 		WHERE ps.tenant_id = ? AND ps.competition_id = ?
 		ORDER BY ps.score DESC
@@ -1439,12 +1439,12 @@ func competitionRankingHandler(c echo.Context) error {
 		competitionID,
 		rankAfter,
 	); err != nil {
-		return fmt.Errorf("error Select player_score: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
+		return fmt.Errorf("error Select player_score_new: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
 	}
 	// ranks := make([]CompetitionRank, 0, len(pss))
 	// scoredPlayerSet := make(map[string]struct{}, len(pss))
 	// for _, ps := range pss {
-	// 	// player_scoreが同一player_id内ではrow_numの降順でソートされているので
+	// 	// player_score_newが同一player_id内ではrow_numの降順でソートされているので
 	// 	// 現れたのが2回目以降のplayer_idはより大きいrow_numでスコアが出ているとみなせる
 	// 	if _, ok := scoredPlayerSet[ps.PlayerID]; ok {
 	// 		continue
@@ -1721,6 +1721,21 @@ on v.player_id = pi and v.created_at = min_created_at
 		if _, err := adminDB.NamedExecContext(c.Request().Context(), `
 		insert into visit_history_new (tenant_id, competition_id, player_id, created_at, updated_at) values (:tenant_id, :competition_id, :player_id, :created_at, :updated_at)`, newV[bin*i:min]); err != nil {
 			return fmt.Errorf("error NamedExecContext visit_history: %w", err)
+		}
+	}
+
+	for i := 1; i <= 100; i++ {
+		tenantDB, err := connectToTenantDB(int64(i))
+		if err != nil {
+			return fmt.Errorf("error connectToTenantDB: %w", err)
+		}
+		if _, err := tenantDB.ExecContext(c.Request().Context(),
+			`
+INSERT INTO player_score_new
+SELECT id, tenant_id, player_id, competition_id, score, max(row_num) as row_num, created_at, updated_at
+FROM player_score
+GROUP BY competition_id, player_id`); err != nil {
+			return fmt.Errorf("error ExecContext: %w", err)
 		}
 	}
 
