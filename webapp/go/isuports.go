@@ -32,6 +32,7 @@ import (
 	_ "github.com/newrelic/go-agent/v3/integrations/nrmysql"
 	_ "github.com/newrelic/go-agent/v3/integrations/nrsqlite3"
 	"github.com/newrelic/go-agent/v3/newrelic"
+	"github.com/patrickmn/go-cache"
 )
 
 const (
@@ -52,6 +53,8 @@ var (
 	adminDB *sqlx.DB
 
 	sqliteDriverName = "nrsqlite3"
+
+	playerCache = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
 )
 
 // 環境変数を取得する、なければデフォルト値を返す
@@ -389,10 +392,16 @@ type PlayerRow struct {
 
 // 参加者を取得する
 func retrievePlayer(ctx context.Context, tenantDB dbOrTx, id string) (*PlayerRow, error) {
+	pc, found := playerCache.Get(id)
+	if found {
+		ppc := pc.(PlayerRow)
+		return &ppc, nil
+	}
 	var p PlayerRow
 	if err := tenantDB.GetContext(ctx, &p, "SELECT * FROM player WHERE id = ?", id); err != nil {
 		return nil, fmt.Errorf("error Select player: id=%s, %w", id, err)
 	}
+	playerCache.Set(id, p, cache.DefaultExpiration)
 	return &p, nil
 }
 
@@ -881,6 +890,16 @@ func playerDisqualifiedHandler(c echo.Context) error {
 			true, now, playerID, err,
 		)
 	}
+	pc, found := playerCache.Get(playerID)
+	if !found {
+		return echo.NewHTTPError(http.StatusNotFound, "player not found")
+	}
+	pcp := pc.(PlayerRow)
+
+	pcp.IsDisqualified = true
+	pcp.UpdatedAt = now
+	playerCache.Set(playerID, pcp, cache.DefaultExpiration)
+
 	p, err := retrievePlayer(ctx, tenantDB, playerID)
 	if err != nil {
 		// 存在しないプレイヤー
