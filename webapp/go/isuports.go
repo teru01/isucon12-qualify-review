@@ -55,6 +55,7 @@ var (
 	sqliteDriverName = "nrsqlite3"
 
 	playerCache = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
+	cCache      = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
 )
 
 // 環境変数を取得する、なければデフォルト値を返す
@@ -432,10 +433,15 @@ type CompetitionRow struct {
 
 // 大会を取得する
 func retrieveCompetition(ctx context.Context, tenantDB dbOrTx, id string) (*CompetitionRow, error) {
+	if cc, found := cCache.Get(id); found {
+		ccc := cc.(CompetitionRow)
+		return &ccc, nil
+	}
 	var c CompetitionRow
 	if err := tenantDB.GetContext(ctx, &c, "SELECT * FROM competition WHERE id = ?", id); err != nil {
 		return nil, fmt.Errorf("error Select competition: id=%s, %w", id, err)
 	}
+	cCache.Set(id, c, cache.DefaultExpiration)
 	return &c, nil
 }
 
@@ -838,6 +844,14 @@ func playersAddHandler(c echo.Context) error {
 				id, displayName, false, now, now, err,
 			)
 		}
+		playerCache.Set(id, PlayerRow{
+			ID:             id,
+			TenantID:       v.tenantID,
+			DisplayName:    displayName,
+			IsDisqualified: false,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		}, cache.DefaultExpiration)
 		p, err := retrievePlayer(ctx, tenantDB, id)
 		if err != nil {
 			return fmt.Errorf("error retrievePlayer: %w", err)
@@ -891,14 +905,12 @@ func playerDisqualifiedHandler(c echo.Context) error {
 		)
 	}
 	pc, found := playerCache.Get(playerID)
-	if !found {
-		return echo.NewHTTPError(http.StatusNotFound, "player not found")
+	if found {
+		pcp := pc.(PlayerRow)
+		pcp.IsDisqualified = true
+		pcp.UpdatedAt = now
+		playerCache.Set(playerID, pcp, cache.DefaultExpiration)
 	}
-	pcp := pc.(PlayerRow)
-
-	pcp.IsDisqualified = true
-	pcp.UpdatedAt = now
-	playerCache.Set(playerID, pcp, cache.DefaultExpiration)
 
 	p, err := retrievePlayer(ctx, tenantDB, playerID)
 	if err != nil {
@@ -964,7 +976,14 @@ func competitionsAddHandler(c echo.Context) error {
 			id, v.tenantID, title, now, now, err,
 		)
 	}
-
+	cCache.Set(id, CompetitionRow{
+		ID:         id,
+		TenantID:   v.tenantID,
+		Title:      title,
+		FinishedAt: sql.NullInt64{},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}, cache.DefaultExpiration)
 	res := CompetitionsAddHandlerResult{
 		Competition: CompetitionDetail{
 			ID:         id,
@@ -1016,6 +1035,12 @@ func competitionFinishHandler(c echo.Context) error {
 			"error Update competition: finishedAt=%d, updatedAt=%d, id=%s, %w",
 			now, now, id, err,
 		)
+	}
+	if cc, found := cCache.Get(id); found {
+		ccp := cc.(CompetitionRow)
+		ccp.FinishedAt = sql.NullInt64{Valid: true, Int64: now}
+		ccp.UpdatedAt = now
+		cCache.Set(id, ccp, cache.DefaultExpiration)
 	}
 	return c.JSON(http.StatusOK, SuccessResult{Status: true})
 }
