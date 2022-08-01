@@ -63,11 +63,12 @@ var (
 
 	sqliteDriverName = "nrsqlite3"
 
-	playerCache  = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
-	cCache       = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
-	tCache       = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
-	billingCache = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
-	rankCache    = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
+	playerCache       = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
+	cCache            = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
+	tCache            = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
+	billingCache      = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
+	rankCache         = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
+	playerDetailCache = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
 
 	visitHistory = &VisitHistoryx{
 		data:  make(map[string]map[string]struct{}),
@@ -993,6 +994,12 @@ func playerDisqualifiedHandler(c echo.Context) error {
 		return fmt.Errorf("error retrievePlayer: %w", err)
 	}
 
+	if pri, found := playerDetailCache.Get(fmt.Sprintf("%v-%v", v.tenantID, p.ID)); found {
+		pr := pri.(PlayerHandlerResult)
+		pr.Player.IsDisqualified = true
+		playerDetailCache.Set(fmt.Sprintf("%v-%v", v.tenantID, p.ID), pr, cache.DefaultExpiration)
+	}
+
 	res := PlayerDisqualifiedHandlerResult{
 		Player: PlayerDetail{
 			ID:             p.ID,
@@ -1294,8 +1301,12 @@ func competitionScoreHandler(c echo.Context) error {
 		ORDER BY ps.score DESC`, v.tenantID, competitionID); err != nil {
 		return fmt.Errorf("error: %w", err)
 	}
-
 	rankCache.Set(fmt.Sprintf("%v-%v", v.tenantID, competitionID), ranking, cache.DefaultExpiration)
+
+	// playercache
+	for _, ps := range psmap {
+		playerDetailCache.Delete(fmt.Sprintf("%v-%v", v.tenantID, ps.PlayerID))
+	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("error tx.Commit: %w", err)
@@ -1424,6 +1435,15 @@ func playerHandler(c echo.Context) error {
 		return fmt.Errorf("error retrievePlayer: %w", err)
 	}
 
+	if pri, found := playerDetailCache.Get(fmt.Sprintf("%v-%v", v.tenantID, playerID)); found {
+		pr := pri.(PlayerHandlerResult)
+		res := SuccessResult{
+			Status: true,
+			Data:   pr,
+		}
+		return c.JSON(http.StatusOK, res)
+	}
+
 	// あるプレイヤーに注目して、スコアのある大会ごとの詳細情報を取得する
 
 	var psds []PlayerScoreDetail
@@ -1488,17 +1508,18 @@ ORDER BY c.created_at`, playerID); err != nil {
 	// 		Score:            ps.Score,
 	// 	})
 	// }
-
+	pr := PlayerHandlerResult{
+		Player: PlayerDetail{
+			ID:             p.ID,
+			DisplayName:    p.DisplayName,
+			IsDisqualified: p.IsDisqualified,
+		},
+		Scores: psds,
+	}
+	playerDetailCache.Set(fmt.Sprintf("%v-%v", v.tenantID, playerID), pr, cache.DefaultExpiration)
 	res := SuccessResult{
 		Status: true,
-		Data: PlayerHandlerResult{
-			Player: PlayerDetail{
-				ID:             p.ID,
-				DisplayName:    p.DisplayName,
-				IsDisqualified: p.IsDisqualified,
-			},
-			Scores: psds,
-		},
+		Data:   pr,
 	}
 	return c.JSON(http.StatusOK, res)
 }
