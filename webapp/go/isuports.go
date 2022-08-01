@@ -51,7 +51,7 @@ const (
 )
 
 type VisitHistoryx struct {
-	mutex sync.Mutex
+	mutex sync.RWMutex
 	data  map[string]map[string]struct{}
 }
 
@@ -70,7 +70,7 @@ var (
 
 	visitHistory = &VisitHistoryx{
 		data:  make(map[string]map[string]struct{}),
-		mutex: sync.Mutex{},
+		mutex: sync.RWMutex{},
 	}
 )
 
@@ -1120,7 +1120,7 @@ func competitionFinishHandler(c echo.Context) error {
 
 	// 閲覧履歴を書き込む
 	vs := []VisitHistoryRow{}
-	visitHistory.mutex.Lock()
+	visitHistory.mutex.RLock()
 	pMap := visitHistory.data[fmt.Sprintf("%v-%v", v.tenantID, id)]
 	for pID := range pMap {
 		vs = append(vs, VisitHistoryRow{
@@ -1129,7 +1129,7 @@ func competitionFinishHandler(c echo.Context) error {
 			CompetitionID: id,
 		})
 	}
-	visitHistory.mutex.Unlock()
+	visitHistory.mutex.RUnlock()
 	if len(vs) > 0 {
 		if _, err := adminDB.NamedExecContext(
 			ctx,
@@ -1544,7 +1544,6 @@ func competitionRankingHandler(c echo.Context) error {
 	if !competition.FinishedAt.Valid {
 		// 課金に使われるのは大会中のアクセスだけ
 
-		// now := time.Now().Unix()
 		// 大会終了時に書き込めてれば良い
 		visitHistory.mutex.Lock()
 		if visitHistory.data[fmt.Sprintf("%v-%v", v.tenantID, competitionID)] == nil {
@@ -1555,14 +1554,14 @@ func competitionRankingHandler(c echo.Context) error {
 
 		// if _, err := adminDB.ExecContext(
 		// 	ctx,
-		// 	"INSERT INTO visit_history_new (player_id, tenant_id, competition_id, created_at) VALUES (?, ?, ?, ?)",
-		// 	v.playerID, v.tenantID, competitionID, now,
+		// 	"INSERT INTO visit_history_new (player_id, tenant_id, competition_id) VALUES (?, ?, ?)",
+		// 	v.playerID, v.tenantID, competitionID,
 		// ); err != nil {
 		// 	var me *mysql.MySQLError
 		// 	if !(errors.As(err, &me) && me.Number == 1062) {
 		// 		return fmt.Errorf(
-		// 			"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, createdAt=%d, updatedAt=%d, %w",
-		// 			v.playerID, v.tenantID, competitionID, now, now, err,
+		// 			"error Insert visit_history: playerID=%s, tenantID=%d, competitionID=%s, %w",
+		// 			v.playerID, v.tenantID, competitionID, err,
 		// 		)
 		// 	}
 		// }
