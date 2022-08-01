@@ -67,6 +67,7 @@ var (
 	cCache       = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
 	tCache       = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
 	billingCache = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
+	rankCache    = cache.New(cache.DefaultExpiration, cache.DefaultExpiration)
 
 	visitHistory = &VisitHistoryx{
 		data:  make(map[string]map[string]struct{}),
@@ -1282,9 +1283,24 @@ func competitionScoreHandler(c echo.Context) error {
 	); err != nil {
 		return fmt.Errorf("error: %w", err)
 	}
+
+	// ランキング更新
+	ranking := []CompetitionRank{}
+	if err := tx.SelectContext(ctx, &ranking,
+		`SELECT RANK() OVER (ORDER BY score DESC, row_num ASC) AS rank, score, player_id, display_name
+		FROM player_score_new ps
+		JOIN player ON player.id = ps.player_id
+		WHERE ps.tenant_id = ? AND ps.competition_id = ?
+		ORDER BY ps.score DESC`, v.tenantID, competitionID); err != nil {
+		return fmt.Errorf("error: %w", err)
+	}
+
+	rankCache.Set(fmt.Sprintf("%v-%v", v.tenantID, competitionID), ranking, cache.DefaultExpiration)
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("error tx.Commit: %w", err)
 	}
+
 	// for _, ps := range playerScoreRows {
 	// 	if _, err := tenantDB.NamedExecContext(
 	// 		ctx,
@@ -1583,23 +1599,29 @@ func competitionRankingHandler(c echo.Context) error {
 	// }
 	// defer fl.Close()
 	// s2.End()
-	s4 := txn.StartSegment("s4")
 	pagedRanks := make([]CompetitionRank, 0, 100)
-	if err := tenantDB.SelectContext(
-		ctx,
-		&pagedRanks,
-		`SELECT RANK() OVER (ORDER BY score DESC, row_num ASC) AS rank, score, player_id, display_name
+	s4 := txn.StartSegment("s4")
+	if ranking, found := rankCache.Get(fmt.Sprintf("%v-%v", v.tenantID, competitionID)); found {
+		r := ranking.([]CompetitionRank)
+		m := int(math.Min(float64(rankAfter+100), float64(len(r))))
+		pagedRanks = r[rankAfter:m]
+	} else {
+		if err := tenantDB.SelectContext(
+			ctx,
+			&pagedRanks,
+			`SELECT RANK() OVER (ORDER BY score DESC, row_num ASC) AS rank, score, player_id, display_name
 		FROM player_score_new ps
 		JOIN player ON player.id = ps.player_id
 		WHERE ps.tenant_id = ? AND ps.competition_id = ?
 		ORDER BY ps.score DESC
 		limit 100
 		offset ?`,
-		v.tenantID,
-		competitionID,
-		rankAfter,
-	); err != nil {
-		return fmt.Errorf("error Select player_score_new: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
+			v.tenantID,
+			competitionID,
+			rankAfter,
+		); err != nil {
+			return fmt.Errorf("error Select player_score_new: tenantID=%d, competitionID=%s, %w", v.tenantID, competitionID, err)
+		}
 	}
 	// ranks := make([]CompetitionRank, 0, len(pss))
 	// scoredPlayerSet := make(map[string]struct{}, len(pss))
