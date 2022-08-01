@@ -1583,7 +1583,7 @@ func competitionRankingHandler(c echo.Context) error {
 	// }
 	// defer fl.Close()
 	// s2.End()
-	s4 := txn.StartSegment("s3")
+	s4 := txn.StartSegment("s4")
 	pagedRanks := make([]CompetitionRank, 0, 100)
 	if err := tenantDB.SelectContext(
 		ctx,
