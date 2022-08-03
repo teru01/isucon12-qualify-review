@@ -74,6 +74,8 @@ var (
 		data:  make(map[string]map[string]struct{}),
 		mutex: sync.RWMutex{},
 	}
+
+	key interface{}
 )
 
 // 環境変数を取得する、なければデフォルト値を返す
@@ -251,6 +253,19 @@ func Run() {
 	port := getEnv("SERVER_APP_PORT", "3000")
 	e.Logger.Infof("starting isuports server on : %s ...", port)
 	serverPort := fmt.Sprintf(":%s", port)
+
+	keyFilename := getEnv("ISUCON_JWT_KEY_FILE", "../public.pem")
+	keysrc, err := os.ReadFile(keyFilename)
+	if err != nil {
+		e.Logger.Fatalf("error os.ReadFile: keyFilename=%s: %w", keyFilename, err)
+		return
+	}
+	key, _, err = jwk.DecodePEM(keysrc)
+	if err != nil {
+		e.Logger.Fatalf("error jwk.DecodePEM: %w", err)
+		return
+	}
+
 	e.Logger.Fatal(e.Start(serverPort))
 }
 
@@ -297,16 +312,6 @@ func parseViewer(c echo.Context) (*Viewer, error) {
 		)
 	}
 	tokenStr := cookie.Value
-
-	keyFilename := getEnv("ISUCON_JWT_KEY_FILE", "../public.pem")
-	keysrc, err := os.ReadFile(keyFilename)
-	if err != nil {
-		return nil, fmt.Errorf("error os.ReadFile: keyFilename=%s: %w", keyFilename, err)
-	}
-	key, _, err := jwk.DecodePEM(keysrc)
-	if err != nil {
-		return nil, fmt.Errorf("error jwk.DecodePEM: %w", err)
-	}
 
 	token, err := jwt.Parse(
 		[]byte(tokenStr),
