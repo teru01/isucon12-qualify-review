@@ -16,7 +16,6 @@ import (
 	"reflect"
 	"regexp"
 	"runtime/debug"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1890,37 +1889,38 @@ func initializeHandler(c echo.Context) error {
 		return fmt.Errorf("error exec.Command: %s %e", string(out), err)
 	}
 
-	var v []VisitHistoryRow
-	if err := adminDB.SelectContext(c.Request().Context(), &v, `
-	select v.* 
+	// var v []VisitHistoryRow
+	newV := make([]VisitHistoryRow, 0)
+	if err := adminDB.SelectContext(c.Request().Context(), &newV, `
+	select distinct v.*
 from visit_history as v
-JOIN (SELECT player_id as pi, min(created_at) AS min_created_at FROM visit_history group by tenant_id, competition_id, player_id) as m
-on v.player_id = pi and v.created_at = min_created_at
+JOIN (SELECT tenant_id as ti, competition_id as ci, player_id as pi, min(created_at) AS min_created_at FROM visit_history group by tenant_id, competition_id, player_id) as m
+on v.tenant_id = ti and v.competition_id = ci and v.player_id = pi and v.created_at = min_created_at
 `); err != nil {
 		return fmt.Errorf("error Select visit_history: %w", err)
 	}
-	sort.Slice(v, func(i, j int) bool {
-		if v[i].TenantID == v[j].TenantID {
-			if v[i].CompetitionID == v[j].CompetitionID {
-				if v[i].PlayerID == v[j].PlayerID {
-					return v[i].CreatedAt < v[j].CreatedAt
-				}
-				return v[i].PlayerID < v[j].PlayerID
-			}
-			return v[i].CompetitionID < v[j].CompetitionID
-		}
-		return v[i].TenantID < v[j].TenantID
-	})
+	// sort.Slice(v, func(i, j int) bool {
+	// 	if v[i].TenantID == v[j].TenantID {
+	// 		if v[i].CompetitionID == v[j].CompetitionID {
+	// 			if v[i].PlayerID == v[j].PlayerID {
+	// 				return v[i].CreatedAt < v[j].CreatedAt
+	// 			}
+	// 			return v[i].PlayerID < v[j].PlayerID
+	// 		}
+	// 		return v[i].CompetitionID < v[j].CompetitionID
+	// 	}
+	// 	return v[i].TenantID < v[j].TenantID
+	// })
 
-	prevVh := VisitHistoryRow{}
-	newV := make([]VisitHistoryRow, 0, len(v))
-	for _, vh := range v {
-		if vh.TenantID == prevVh.TenantID && vh.CompetitionID == prevVh.CompetitionID && vh.PlayerID == prevVh.PlayerID {
-			continue
-		}
-		newV = append(newV, vh)
-		prevVh = vh
-	}
+	// prevVh := VisitHistoryRow{}
+	// newV := make([]VisitHistoryRow, 0, len(v))
+	// for _, vh := range v {
+	// 	if vh.TenantID == prevVh.TenantID && vh.CompetitionID == prevVh.CompetitionID && vh.PlayerID == prevVh.PlayerID {
+	// 		continue
+	// 	}
+	// 	newV = append(newV, vh)
+	// 	prevVh = vh
+	// }
 
 	bin := 10000
 	lim := (len(newV) + bin - 1) / bin
